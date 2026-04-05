@@ -1,0 +1,6 @@
+ 05-04-2026 17:36:28:566 [pid=277533 tid=277533] NOTICE  cufio-drv:830 running in compatible mode
+ 05-04-2026 17:36:30:607 [pid=277533 tid=277533] ERROR  cufio-fs:68 mount options not specified for device in mount table /dev/dm-0
+ 05-04-2026 17:36:30:767 [pid=277533 tid=277533] ERROR  cufio_core:1597 cuFileBufRegister error, device memory already registered
+ 05-04-2026 17:36:30:767 [pid=277533 tid=277533] ERROR  cufio_core:1729 cuFileBufRegister error device pointer already registered
+ 05-04-2026 17:38:14:694 [pid=277533 tid=277533] ERROR  cufio:145 cuFileBufDeregister error, object for device pointer is not registered
+ 05-04-2026 17:38:14:695 [pid=277533 tid=277533] ERROR  cufio:171 cuFileBufDeregister error: device pointer lookup failure

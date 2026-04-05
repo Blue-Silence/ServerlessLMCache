@@ -1,0 +1,13 @@
+chunk_size: 256
+local_cpu: true
+max_local_cpu_size: 5.0
+use_layerwise: true
+storage_plugins: "layerwise_callback"
+extra_config:
+  storage_plugin.layerwise_callback.module_path: lmc_layerwise_callback_backend.backend
+  storage_plugin.layerwise_callback.class_name: LayerwiseCallbackBackend
+  storage_plugin.layerwise_callback.local_disk_uri: "file:///home/junhaoy/ServerlessLMCache/.kvcache/"
+  storage_plugin.layerwise_callback.max_local_disk_size: 20.0
+  storage_plugin.layerwise_callback.event_log_path: /home/junhaoy/ServerlessLMCache/.kvcache/callback-events.jsonl
+  storage_plugin.layerwise_callback.callback_command: "python3 /home/junhaoy/ServerlessLMCache/scripts/print_layerwise_callback.py"
+  storage_plugin.layerwise_callback.callback_timeout_sec: 30
