@@ -4,6 +4,15 @@
 
 本文档描述的是“当前已经验证可运行”的方案，不是所有可能方案的总览。
 
+补充说明：仓库当前后续工作的默认重心已经转到 `embedded priority-fs` 路线。
+
+- `embedded_demo/` 是现在优先继续推进的主线
+- `LMCache MP` 路径仍然保留，主要用于历史对照和回归验证
+- 如果没有特别说明，默认应优先基于 embedded 脚本、server 和 helper 继续工作
+- 当前 embedded 默认也已经切到：
+  - `save_decode_cache = on`
+  - `save_unfull_chunk = on`
+
 ## 1. 我们想做到什么
 
 我们当前希望实现并验证的，不只是“LMCache 能接上 vLLM”，而是一个更具体的缓存语义：
@@ -512,3 +521,101 @@ python demo/request_demo.py --requests 1
 - 这是不是重启后的第一次请求
 - `LMCache` 日志里是 `L1` 命中还是 `L2` 命中
 - 本轮 `HASH_DEBUG lookup` 和上一轮落盘 hash 是否一致
+
+## 14. 可选 embedded priority-fs 路径
+
+仓库里现在额外提供了一条“不要独立 `LMCache MP` 进程”的可选路径：
+
+- 启动脚本：
+  - [run_vllm_lmcache_embedded_priority_fs_demo.sh](/home/junhaoy/ServerlessLMCache/embedded_demo/run_vllm_lmcache_embedded_priority_fs_demo.sh)
+- 自定义 connector 插件：
+  - [priority_fs_adapter.py](/home/junhaoy/ServerlessLMCache/embedded_demo/priority_fs_adapter.py)
+
+这条路径的设计目标是：
+
+- 仍然使用 `fs` backend 语义
+- 不修改已安装的 `lmcache` 包源码
+- 通过 LMCache 已暴露的 `remote connector plugin` 扩展点，在当前仓库内实现
+- 继续保持：
+  - 读优先 `B = .kvcache_remote`
+  - `B` miss 再回退到 `A = .kvcache`
+  - 只写 `A`
+- 当前默认也允许：
+  - decode cache 写入
+  - partial / unfull chunk 写入
+
+实现方式不是 hack 文件系统 API，而是在 embedded 路径里复用两个官方 `FSConnector`：
+
+- 一个只负责读优先路径 `B`
+- 一个负责回退读取和唯一写入路径 `A`
+
+这里还有一个很容易混淆、但实际排障很重要的点：
+
+- embedded 路径落盘文件名遵循 `FSConnector + CacheEngineKey` 的 schema：
+  - `<model_name>@<world_size>@<worker_id>@<chunk_hash>@<dtype>.data`
+- 如果启用 `layerwise`，则会改成 `LayerCacheEngineKey` schema：
+  - `<model_name>@<world_size>@<worker_id>@<chunk_hash>@<dtype>@<layer_id>.data`
+- 这和 `LMCache MP` 默认 `fs` adapter 的 schema 不同：
+  - `<model_name>@<kv_rank_hex>@<chunk_hash_hex>.data`
+- 因此不要拿 MP 路径下的文件名推导脚本，直接去预测 embedded 路径的 `.kvcache` / `.kvcache_remote` 文件名
+
+当前默认 `save_unfull_chunk=on` 还意味着：
+
+- 最后一个不满 chunk 的尾块也可能单独落盘
+- 后续 decode 继续增长后，磁盘上可能同时保留“partial 版本”和“更长版本”的重叠文件
+- 这些文件不是 append 关系，而是不同 key / 不同文件并存
+- 这正是我们当前愿意接受、并希望保留的语义，因为它让包含 prefill + decode 的完整上下文更容易直接按文件名推导
+
+仓库里现在为 embedded 路径单独提供了一组对应 helper：
+
+- [prompt_cache_files.py](/home/junhaoy/ServerlessLMCache/embedded_demo/cache_files/prompt_cache_files.py)
+- [list_prompt_cache_files.py](/home/junhaoy/ServerlessLMCache/embedded_demo/cache_files/list_prompt_cache_files.py)
+  - 支持 `--layerwise`
+  - 必要时支持 `--num-layers`
+  - 默认按 `save_unfull_chunk=on` 计算
+  - 如需回到旧行为可加 `--no-save-unfull-chunk`
+
+当前默认验证路径已经切换到 `embedded priority-fs`；`LMCache MP` 方案保留为历史对照路径。
+
+如果希望做成“常驻 Python server”，而不是 one-shot 脚本，还可以使用：
+
+- [run_vllm_async_engine_priority_fs_server.py](/home/junhaoy/ServerlessLMCache/embedded_demo/run_vllm_async_engine_priority_fs_server.py)
+- 推荐启动脚本：
+  - [run_vllm_async_engine_priority_fs_server.sh](/home/junhaoy/ServerlessLMCache/embedded_demo/run_vllm_async_engine_priority_fs_server.sh)
+
+这个脚本会：
+
+- 在 Python 里直接创建 `AsyncLLMEngine`
+- 暴露最小 OpenAI-compatible 接口：
+  - `/health`
+  - `/v1/models`
+  - `/v1/completions`
+- 允许继续复用现有 [demo/request_demo.py](/home/junhaoy/ServerlessLMCache/demo/request_demo.py)
+- 也提供一份 embedded 专用请求脚本：
+  - [request_demo.py](/home/junhaoy/ServerlessLMCache/embedded_demo/request_demo.py)
+
+这里有一个很重要的实现细节：
+
+- `PYTHONHASHSEED=0` 仍然必须在 Python 解释器启动前设置
+- 因此现在推荐统一通过 [run_vllm_async_engine_priority_fs_server.sh](/home/junhaoy/ServerlessLMCache/embedded_demo/run_vllm_async_engine_priority_fs_server.sh) 启动
+- Python 脚本本身只做 fail-fast 检查，不再自行 `exec`
+- 如果直接裸跑 Python 脚本而没先设置 `PYTHONHASHSEED=0`，它会立即报错提醒
+
+这个 server 入口现在也支持两个与当前实验密切相关的开关：
+
+- `--layerwise`
+- `--save-decode-cache`
+- `--save-unfull-chunk`
+
+如果通过 shell 包装脚本启动，也可以改用环境变量：
+
+- `LAYERWISE=1`
+- `SAVE_DECODE_CACHE=1`
+- `SAVE_UNFULL_CHUNK=1`
+
+例如：
+
+```bash
+LAYERWISE=1 SAVE_DECODE_CACHE=1 SAVE_UNFULL_CHUNK=1 \
+  bash embedded_demo/run_vllm_async_engine_priority_fs_server.sh
+```
