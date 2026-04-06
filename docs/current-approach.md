@@ -588,18 +588,25 @@ python demo/request_demo.py --requests 1
 
 - `layerwise = on`
 - `save_unfull_chunk = off`
+- `save_decode_cache = on`
 
-已经观察到的直接报错是：
+当前已知结论是：
 
-- `Shape dimension should be 4`
+- `layerwise` 本身现在已经可以在 embedded priority-fs 路线上工作
+- 之前 `Shape dimension should be 4` 这一层 repo-local 适配已经通过
+  `priority_fs_adapter.py` 里的 layerwise-aware FS 包装层补上了
+- 当前真正还没打通的是：
+  - `layerwise = on`
+  - 同时
+  - `save_unfull_chunk = on`
 
-当前已知 blocker 是：
+因此，当前问题已经从“layerwise 本身不通”
+收敛成：
 
-- `RemoteConnector` 在 `config.use_layerwise` 时会强制 `save_chunk_meta=True`
-- `RemoteMetadata.serialize()` 当前要求 shape 必须是 4 维
-- 但 `LocalCPUBackend` 在 `layerwise` 下处理的是 3 维单层张量视图
-
-因此，当前更像是 `embedded priority-fs + FSConnector` 与 `layerwise` memory object / metadata schema 之间还缺一层 repo-local 适配。
+- `embedded priority-fs`
+- 在
+- `layerwise + partial / unfull chunk`
+- 组合下仍然不可靠
 
 后续如果继续做这件事，请优先考虑 repo-local 方案，不要直接修改已安装的 `lmcache` 包源码。
 
@@ -627,37 +634,32 @@ python demo/request_demo.py --requests 1
 - Python 脚本本身只做 fail-fast 检查，不再自行 `exec`
 - 如果直接裸跑 Python 脚本而没先设置 `PYTHONHASHSEED=0`，它会立即报错提醒
 
-这个 server 入口现在也支持两个与当前实验密切相关的开关：
+当前这条 embedded 主线已经切到：
 
-- `--layerwise`
-- `--no-layerwise`
-- `--save-decode-cache`
-- `--save-unfull-chunk`
+- 由 LMCache 原生 YAML 配置文件控制 LMCache 相关参数
+- 启动脚本默认通过 `LMCACHE_CONFIG_FILE` 指向当前 profile
+- Python server 也会在 `main()` 最前面设置默认 `LMCACHE_CONFIG_FILE`
 
-如果通过 shell 包装脚本启动，也可以改用环境变量：
+当前默认 profile 是：
 
-- `LAYERWISE=1`
-- `SAVE_DECODE_CACHE=1`
-- `SAVE_UNFULL_CHUNK=0`
+- [default_layerwise_unfull_off.yaml](/home/junhaoy/ServerlessLMCache/embedded_demo/configs/default_layerwise_unfull_off.yaml)
 
-注意：
+当前常用 profile 包括：
 
-- 当前 embedded 主线已经显式禁止同时启用 `layerwise` 和 `save_unfull_chunk`
-- 如果同时设置：
-  - `LAYERWISE=1`
-  - `SAVE_UNFULL_CHUNK=1`
-- 启动脚本会直接报错并退出
+- [default_layerwise_unfull_off.yaml](/home/junhaoy/ServerlessLMCache/embedded_demo/configs/default_layerwise_unfull_off.yaml)
+- [non_layerwise_unfull_off.yaml](/home/junhaoy/ServerlessLMCache/embedded_demo/configs/non_layerwise_unfull_off.yaml)
+- [non_layerwise_unfull_on.yaml](/home/junhaoy/ServerlessLMCache/embedded_demo/configs/non_layerwise_unfull_on.yaml)
 
-当前默认推荐组合是：
+如果要切换 profile，推荐直接换配置文件，例如：
 
 ```bash
-LAYERWISE=1 SAVE_DECODE_CACHE=1 SAVE_UNFULL_CHUNK=0 \
+LMCACHE_CONFIG_FILE_PATH=embedded_demo/configs/non_layerwise_unfull_on.yaml \
   bash embedded_demo/run_vllm_async_engine_priority_fs_server.sh
 ```
 
-而下面这个组合当前会 fail-fast：
+或者：
 
 ```bash
-LAYERWISE=1 SAVE_DECODE_CACHE=1 SAVE_UNFULL_CHUNK=1 \
-  bash embedded_demo/run_vllm_async_engine_priority_fs_server.sh
+python embedded_demo/run_vllm_async_engine_priority_fs_server.py \
+  --config embedded_demo/configs/non_layerwise_unfull_off.yaml
 ```

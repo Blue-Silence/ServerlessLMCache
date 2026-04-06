@@ -159,6 +159,8 @@ LAYERWISE=1 SAVE_UNFULL_CHUNK=1
   - `save_decode_cache = on`
   - `save_unfull_chunk = off`
   - `layerwise = on`
+  - 默认 profile:
+    [default_layerwise_unfull_off.yaml](/home/junhaoy/ServerlessLMCache/embedded_demo/configs/default_layerwise_unfull_off.yaml)
 
 如果后续一定要重新打开 `layerwise`，当前更推荐：
 
@@ -174,8 +176,8 @@ LAYERWISE=1 SAVE_UNFULL_CHUNK=1
 ## 7. 推荐复现实验
 
 ```bash
-LAYERWISE=1 SAVE_DECODE_CACHE=0 SAVE_UNFULL_CHUNK=1 \
+LMCACHE_CONFIG_FILE_PATH=embedded_demo/configs/non_layerwise_unfull_on.yaml \
 bash embedded_demo/run_vllm_async_engine_priority_fs_server.sh
 ```
 
-当前这个组合会被启动脚本直接拒绝，用来明确暴露不支持的配置。
+这组配置可用于对照验证 `save_unfull_chunk=on` 的 non-layerwise 行为。

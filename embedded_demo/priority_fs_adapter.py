@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import aiofiles
 import aiofiles.os
-import struct
 import torch
 
 from typing import List, Optional
@@ -63,40 +62,12 @@ def _restore_shape_from_remote_metadata(shape: torch.Size) -> torch.Size:
     return torch.Size(actual_shape)
 
 
-def _serialize_cached_positions(cached_positions: Optional[torch.Tensor]) -> bytes:
-    if cached_positions is None:
-        return struct.pack("<i", -1)
-    positions = cached_positions.to(dtype=torch.int64, device="cpu").tolist()
-    return struct.pack(f"<i{len(positions)}q", len(positions), *positions)
-
-
-def _deserialize_cached_positions(data: bytes) -> Optional[torch.Tensor]:
-    if len(data) < 4:
-        raise ValueError("cached_positions sidecar is too short")
-    count = struct.unpack_from("<i", data, 0)[0]
-    if count < 0:
-        return None
-    expected_size = struct.calcsize(f"<i{count}q")
-    if len(data) != expected_size:
-        raise ValueError(
-            f"cached_positions sidecar size mismatch: expected {expected_size}, got {len(data)}"
-        )
-    if count == 0:
-        return torch.empty(0, dtype=torch.int64)
-    values = struct.unpack_from(f"<i{count}q", data, 0)[1:]
-    return torch.tensor(values, dtype=torch.int64)
-
-
 class LayerwiseAwareFSConnector(FSConnector):
     """FSConnector variant that tolerates layerwise 3D memory objects."""
 
     @staticmethod
     def _logical_byte_view(memory_obj: MemoryObj) -> memoryview:
         return memory_obj.byte_array[: memory_obj.get_size()]
-
-    def _get_cached_positions_path(self, key: CacheEngineKey):
-        file_path = self._get_file_path(key)
-        return file_path.with_suffix(".pos")
 
     async def get(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         if not self.save_chunk_meta:
@@ -142,14 +113,6 @@ class LayerwiseAwareFSConnector(FSConnector):
                 PinMonitor.GetOrCreate(self.local_cpu_backend.config)
                 memory_obj.pin()
 
-                cached_positions_path = self._get_cached_positions_path(key)
-                if await aiofiles.os.path.exists(cached_positions_path):
-                    async with aiofiles.open(cached_positions_path, "rb") as f_pos:
-                        cached_positions_bytes = await f_pos.read()
-                    memory_obj.metadata.cached_positions = _deserialize_cached_positions(
-                        cached_positions_bytes
-                    )
-
             return memory_obj
 
         except Exception as exc:
@@ -165,8 +128,6 @@ class LayerwiseAwareFSConnector(FSConnector):
             return
 
         final_path, temp_path = self._get_file_and_tmp_path(key)
-        cached_positions_path = self._get_cached_positions_path(key)
-        temp_cached_positions_path = cached_positions_path.with_suffix(".pos.tmp")
 
         try:
             logical_buffer = self._logical_byte_view(memory_obj)
@@ -185,36 +146,13 @@ class LayerwiseAwareFSConnector(FSConnector):
                 await f.write(metadata.serialize())
                 await f.write(logical_buffer)
 
-            cached_positions_bytes = _serialize_cached_positions(
-                memory_obj.metadata.cached_positions
-            )
-            async with aiofiles.open(temp_cached_positions_path, "wb") as f_pos:
-                await f_pos.write(cached_positions_bytes)
-
             await aiofiles.os.replace(temp_path, final_path)
-            await aiofiles.os.replace(temp_cached_positions_path, cached_positions_path)
 
         except Exception as exc:
             logger.error(f"Failed to write file {final_path}: {exc}")
             if await aiofiles.os.path.exists(temp_path):
                 await aiofiles.os.unlink(temp_path)
-            if await aiofiles.os.path.exists(temp_cached_positions_path):
-                await aiofiles.os.unlink(temp_cached_positions_path)
             raise
-
-    def remove_sync(self, key: CacheEngineKey) -> bool:
-        removed = super().remove_sync(key)
-        cached_positions_path = self._get_cached_positions_path(key)
-        try:
-            cached_positions_path.unlink()
-            removed = True
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            logger.error(
-                f"Failed to remove cached_positions sidecar {cached_positions_path}: {exc}"
-            )
-        return removed
 
 
 class PriorityFSConnector(RemoteConnector):

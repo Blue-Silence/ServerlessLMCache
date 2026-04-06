@@ -16,6 +16,9 @@ from pydantic import BaseModel, ConfigDict
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_LMCACHE_CONFIG_FILE = (
+    ROOT_DIR / "embedded_demo" / "configs" / "default_layerwise_unfull_off.yaml"
+)
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
@@ -58,60 +61,6 @@ def resolve_model(model: str, model_source: str) -> str:
     return model
 
 
-def validate_embedded_priority_fs_config(
-    *,
-    use_layerwise: bool,
-    save_unfull_chunk: bool,
-) -> None:
-    if use_layerwise and save_unfull_chunk:
-        raise SystemExit(
-            "Unsupported embedded priority-fs configuration: "
-            "layerwise replay and partial/unfull chunk saving cannot be enabled "
-            "at the same time. Disable --layerwise or use --no-save-unfull-chunk."
-        )
-
-
-def configure_embedded_priority_fs(
-    chunk_size: int,
-    l1_size_gb: float,
-    read_first_dir: Path,
-    write_dir: Path,
-    use_layerwise: bool,
-    save_decode_cache: bool,
-    save_unfull_chunk: bool,
-) -> None:
-    validate_embedded_priority_fs_config(
-        use_layerwise=use_layerwise,
-        save_unfull_chunk=save_unfull_chunk,
-    )
-
-    read_first_dir.mkdir(parents=True, exist_ok=True)
-    write_dir.mkdir(parents=True, exist_ok=True)
-
-    os.environ["LMCACHE_USE_EXPERIMENTAL"] = "True"
-    os.environ["LMCACHE_CHUNK_SIZE"] = str(chunk_size)
-    os.environ["LMCACHE_LOCAL_CPU"] = "True"
-    os.environ["LMCACHE_MAX_LOCAL_CPU_SIZE"] = str(l1_size_gb)
-    os.environ["LMCACHE_USE_LAYERWISE"] = "True" if use_layerwise else "False"
-    os.environ["LMCACHE_SAVE_DECODE_CACHE"] = (
-        "True" if save_decode_cache else "False"
-    )
-    os.environ["LMCACHE_SAVE_UNFULL_CHUNK"] = (
-        "True" if save_unfull_chunk else "False"
-    )
-    os.environ["LMCACHE_REMOTE_SERDE"] = "naive"
-    os.environ["LMCACHE_REMOTE_URL"] = (
-        "priority-fs://"
-        f"?read_path={read_first_dir}"
-        f"&write_path={write_dir}"
-    )
-    os.environ["LMCACHE_REMOTE_STORAGE_PLUGINS"] = "priority_fs"
-    os.environ["LMCACHE_EXTRA_CONFIG"] = (
-        '{"remote_storage_plugin.priority_fs.module_path":"embedded_demo.priority_fs_adapter",'
-        '"remote_storage_plugin.priority_fs.class_name":"PriorityFSConnectorAdapter"}'
-    )
-
-
 class CompletionRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -126,16 +75,6 @@ def build_app(args) -> FastAPI:
     resolved_model = resolve_model(args.model, args.model_source)
     if resolved_model != args.model:
         os.environ["HF_HUB_OFFLINE"] = "1"
-
-    configure_embedded_priority_fs(
-        chunk_size=args.chunk_size,
-        l1_size_gb=args.l1_size_gb,
-        read_first_dir=Path(args.read_first_dir),
-        write_dir=Path(args.write_dir),
-        use_layerwise=args.layerwise,
-        save_decode_cache=args.save_decode_cache,
-        save_unfull_chunk=args.save_unfull_chunk,
-    )
 
     from vllm.config import KVTransferConfig
     from vllm.engine.arg_utils import AsyncEngineArgs
@@ -241,6 +180,9 @@ def build_app(args) -> FastAPI:
 
 
 def main() -> None:
+    os.environ.setdefault("LMCACHE_USE_EXPERIMENTAL", "True")
+    os.environ.setdefault("LMCACHE_CONFIG_FILE", str(DEFAULT_LMCACHE_CONFIG_FILE))
+
     parser = argparse.ArgumentParser(
         description=(
             "Run a minimal OpenAI-compatible Python server backed by "
@@ -253,56 +195,16 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--max-model-len", type=int, default=4096)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.5)
-    parser.add_argument("--chunk-size", type=int, default=256)
-    parser.add_argument("--l1-size-gb", type=float, default=4.0)
-    parser.add_argument("--read-first-dir", default=str(ROOT_DIR / ".kvcache_remote"))
-    parser.add_argument("--write-dir", default=str(ROOT_DIR / ".kvcache"))
-    parser.add_argument(
-        "--layerwise",
-        dest="layerwise",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--no-layerwise",
-        dest="layerwise",
-        action="store_false",
-    )
-    parser.add_argument(
-        "--save-decode-cache",
-        dest="save_decode_cache",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--no-save-decode-cache",
-        dest="save_decode_cache",
-        action="store_false",
-    )
-    parser.add_argument(
-        "--save-unfull-chunk",
-        dest="save_unfull_chunk",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--no-save-unfull-chunk",
-        dest="save_unfull_chunk",
-        action="store_false",
-    )
-    parser.set_defaults(
-        layerwise=True,
-        save_decode_cache=True,
-        save_unfull_chunk=False,
-    )
+    parser.add_argument("--config", default=None)
     args = parser.parse_args()
+    if args.config is not None:
+        os.environ["LMCACHE_CONFIG_FILE"] = str(Path(args.config).expanduser().resolve())
 
     app = build_app(args)
 
     print(f"Starting AsyncLLMEngine Python server on http://{args.host}:{args.port}")
     print(f"Model: {args.model}")
-    print(f"Priority fs read-first dir (B): {args.read_first_dir}")
-    print(f"Priority fs write-only dir (A): {args.write_dir}")
-    print(f"Layerwise: {args.layerwise}")
-    print(f"Save decode cache: {args.save_decode_cache}")
-    print(f"Save unfull chunk: {args.save_unfull_chunk}")
+    print(f"LMCache config file: {os.environ['LMCACHE_CONFIG_FILE']}")
     print(f"PYTHONHASHSEED: {os.environ.get('PYTHONHASHSEED', 'unset')}")
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
