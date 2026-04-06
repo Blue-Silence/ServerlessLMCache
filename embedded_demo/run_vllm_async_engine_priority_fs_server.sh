@@ -7,13 +7,21 @@ VENV_DIR="${ROOT_DIR}/.venv"
 
 PYTHONHASHSEED="${PYTHONHASHSEED:-0}"
 PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
-LAYERWISE="${LAYERWISE:-0}"
+LAYERWISE="${LAYERWISE:-1}"
 SAVE_DECODE_CACHE="${SAVE_DECODE_CACHE:-1}"
-SAVE_UNFULL_CHUNK="${SAVE_UNFULL_CHUNK:-1}"
+SAVE_UNFULL_CHUNK="${SAVE_UNFULL_CHUNK:-0}"
 
 if [[ ! -d "${VENV_DIR}" ]]; then
   echo "Missing virtualenv at ${VENV_DIR}" >&2
   exit 1
+fi
+
+if [[ "${LAYERWISE}" == "1" || "${LAYERWISE}" == "true" || "${LAYERWISE}" == "True" ]]; then
+  if [[ "${SAVE_UNFULL_CHUNK}" == "1" || "${SAVE_UNFULL_CHUNK}" == "true" || "${SAVE_UNFULL_CHUNK}" == "True" ]]; then
+    echo "Unsupported embedded priority-fs configuration: layerwise replay and partial/unfull chunk saving cannot be enabled at the same time." >&2
+    echo "Disable LAYERWISE or set SAVE_UNFULL_CHUNK=0." >&2
+    exit 1
+  fi
 fi
 
 # shellcheck disable=SC1091
@@ -24,6 +32,8 @@ export PYTHONPATH
 EXTRA_ARGS=()
 if [[ "${LAYERWISE}" == "1" || "${LAYERWISE}" == "true" || "${LAYERWISE}" == "True" ]]; then
   EXTRA_ARGS+=("--layerwise")
+else
+  EXTRA_ARGS+=("--no-layerwise")
 fi
 if [[ "${SAVE_DECODE_CACHE}" == "1" || "${SAVE_DECODE_CACHE}" == "true" || "${SAVE_DECODE_CACHE}" == "True" ]]; then
   EXTRA_ARGS+=("--save-decode-cache")

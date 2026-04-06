@@ -17,12 +17,20 @@ WRITE_DIR="${WRITE_DIR:-${ROOT_DIR}/.kvcache}"
 MODEL_SOURCE="${MODEL_SOURCE:-auto}"
 PYTHONHASHSEED="${PYTHONHASHSEED:-0}"
 SAVE_DECODE_CACHE="${SAVE_DECODE_CACHE:-1}"
-SAVE_UNFULL_CHUNK="${SAVE_UNFULL_CHUNK:-1}"
-LAYERWISE="${LAYERWISE:-0}"
+SAVE_UNFULL_CHUNK="${SAVE_UNFULL_CHUNK:-0}"
+LAYERWISE="${LAYERWISE:-1}"
 
 if [[ ! -d "${VENV_DIR}" ]]; then
   echo "Missing virtualenv at ${VENV_DIR}" >&2
   exit 1
+fi
+
+if [[ "${LAYERWISE}" == "1" || "${LAYERWISE}" == "true" || "${LAYERWISE}" == "True" ]]; then
+  if [[ "${SAVE_UNFULL_CHUNK}" == "1" || "${SAVE_UNFULL_CHUNK}" == "true" || "${SAVE_UNFULL_CHUNK}" == "True" ]]; then
+    echo "Unsupported embedded priority-fs configuration: layerwise replay and partial/unfull chunk saving cannot be enabled at the same time." >&2
+    echo "Disable LAYERWISE or set SAVE_UNFULL_CHUNK=0." >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "${READ_FIRST_DIR}" "${WRITE_DIR}"

@@ -70,14 +70,28 @@ def main() -> None:
     parser.add_argument("--worker-id", type=int, default=0)
     parser.add_argument("--kv-dtype", default="bfloat16")
     parser.add_argument("--hash-algorithm", default="builtin")
-    parser.add_argument("--layerwise", action="store_true")
+    parser.add_argument(
+        "--layerwise",
+        dest="layerwise",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no-layerwise",
+        dest="layerwise",
+        action="store_false",
+    )
     parser.add_argument("--num-layers", type=int, default=None)
+    parser.add_argument(
+        "--save-unfull-chunk",
+        dest="save_unfull_chunk",
+        action="store_true",
+    )
     parser.add_argument(
         "--no-save-unfull-chunk",
         dest="save_unfull_chunk",
         action="store_false",
     )
-    parser.set_defaults(save_unfull_chunk=True)
+    parser.set_defaults(layerwise=True, save_unfull_chunk=False)
     parser.add_argument("--cache-dir", default=".kvcache")
     args = parser.parse_args()
 

@@ -46,9 +46,9 @@ def compute_cache_filenames(
     kv_dtype: str = "bfloat16",
     chunk_size: int = 256,
     hash_algorithm: str = "builtin",
-    use_layerwise: bool = False,
+    use_layerwise: bool = True,
     num_layers: int | None = None,
-    save_unfull_chunk: bool = True,
+    save_unfull_chunk: bool = False,
 ) -> tuple[list[int], list[int], list[str]]:
     """Compute embedded LMCache chunk hashes and filenames for a prompt.
 
@@ -71,8 +71,8 @@ def compute_cache_filenames(
       path uses a different object-key schema with ``kv_rank`` instead.
     - When ``use_layerwise=True``, ``num_layers`` must be provided and the
       returned ``chunk_hashes`` list is expanded to align 1:1 with filenames.
-    - ``save_unfull_chunk`` defaults to True here to match the current embedded
-      demo default, so a final partial chunk is also included.
+    - ``save_unfull_chunk`` defaults to False here to match the current embedded
+      demo default, so only full chunks are included unless explicitly enabled.
     """
     if use_layerwise and (num_layers is None or num_layers <= 0):
         raise ValueError("num_layers must be a positive integer when use_layerwise=True")

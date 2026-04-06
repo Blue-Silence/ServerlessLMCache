@@ -58,6 +58,19 @@ def resolve_model(model: str, model_source: str) -> str:
     return model
 
 
+def validate_embedded_priority_fs_config(
+    *,
+    use_layerwise: bool,
+    save_unfull_chunk: bool,
+) -> None:
+    if use_layerwise and save_unfull_chunk:
+        raise SystemExit(
+            "Unsupported embedded priority-fs configuration: "
+            "layerwise replay and partial/unfull chunk saving cannot be enabled "
+            "at the same time. Disable --layerwise or use --no-save-unfull-chunk."
+        )
+
+
 def configure_embedded_priority_fs(
     chunk_size: int,
     l1_size_gb: float,
@@ -67,6 +80,11 @@ def configure_embedded_priority_fs(
     save_decode_cache: bool,
     save_unfull_chunk: bool,
 ) -> None:
+    validate_embedded_priority_fs_config(
+        use_layerwise=use_layerwise,
+        save_unfull_chunk=save_unfull_chunk,
+    )
+
     read_first_dir.mkdir(parents=True, exist_ok=True)
     write_dir.mkdir(parents=True, exist_ok=True)
 
@@ -239,7 +257,16 @@ def main() -> None:
     parser.add_argument("--l1-size-gb", type=float, default=4.0)
     parser.add_argument("--read-first-dir", default=str(ROOT_DIR / ".kvcache_remote"))
     parser.add_argument("--write-dir", default=str(ROOT_DIR / ".kvcache"))
-    parser.add_argument("--layerwise", action="store_true")
+    parser.add_argument(
+        "--layerwise",
+        dest="layerwise",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no-layerwise",
+        dest="layerwise",
+        action="store_false",
+    )
     parser.add_argument(
         "--save-decode-cache",
         dest="save_decode_cache",
@@ -260,7 +287,11 @@ def main() -> None:
         dest="save_unfull_chunk",
         action="store_false",
     )
-    parser.set_defaults(save_decode_cache=True, save_unfull_chunk=True)
+    parser.set_defaults(
+        layerwise=True,
+        save_decode_cache=True,
+        save_unfull_chunk=False,
+    )
     args = parser.parse_args()
 
     app = build_app(args)

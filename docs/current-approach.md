@@ -9,9 +9,13 @@
 - `embedded_demo/` 是现在优先继续推进的主线
 - `LMCache MP` 路径仍然保留，主要用于历史对照和回归验证
 - 如果没有特别说明，默认应优先基于 embedded 脚本、server 和 helper 继续工作
+- `embedded` 下当前请不要同时启用 `layerwise` 和 `partial / unfull chunk replay`
+  - 相关调查结论见：
+    [docs/embedded-layerwise-partial-chunk-investigation.md](/home/junhaoy/ServerlessLMCache/docs/embedded-layerwise-partial-chunk-investigation.md)
 - 当前 embedded 默认也已经切到：
+  - `layerwise = on`
   - `save_decode_cache = on`
-  - `save_unfull_chunk = on`
+  - `save_unfull_chunk = off`
 
 ## 1. 我们想做到什么
 
@@ -559,7 +563,7 @@ python demo/request_demo.py --requests 1
   - `<model_name>@<kv_rank_hex>@<chunk_hash_hex>.data`
 - 因此不要拿 MP 路径下的文件名推导脚本，直接去预测 embedded 路径的 `.kvcache` / `.kvcache_remote` 文件名
 
-当前默认 `save_unfull_chunk=on` 还意味着：
+如果显式打开 `save_unfull_chunk=on`，还意味着：
 
 - 最后一个不满 chunk 的尾块也可能单独落盘
 - 后续 decode 继续增长后，磁盘上可能同时保留“partial 版本”和“更长版本”的重叠文件
@@ -570,12 +574,34 @@ python demo/request_demo.py --requests 1
 
 - [prompt_cache_files.py](/home/junhaoy/ServerlessLMCache/embedded_demo/cache_files/prompt_cache_files.py)
 - [list_prompt_cache_files.py](/home/junhaoy/ServerlessLMCache/embedded_demo/cache_files/list_prompt_cache_files.py)
-  - 支持 `--layerwise`
+  - 默认按 `layerwise=on` 计算
+  - 支持 `--no-layerwise`
   - 必要时支持 `--num-layers`
-  - 默认按 `save_unfull_chunk=on` 计算
-  - 如需回到旧行为可加 `--no-save-unfull-chunk`
+  - 默认按 `save_unfull_chunk=off` 计算
+  - 如需包含 partial tail，可加 `--save-unfull-chunk`
 
 当前默认验证路径已经切换到 `embedded priority-fs`；`LMCache MP` 方案保留为历史对照路径。
+
+### 14.1 当前 layerwise blocker
+
+当前 `embedded priority-fs` 路线下，`layerwise + partial / unfull chunk` 还没有真正打通，当前默认组合是：
+
+- `layerwise = on`
+- `save_unfull_chunk = off`
+
+已经观察到的直接报错是：
+
+- `Shape dimension should be 4`
+
+当前已知 blocker 是：
+
+- `RemoteConnector` 在 `config.use_layerwise` 时会强制 `save_chunk_meta=True`
+- `RemoteMetadata.serialize()` 当前要求 shape 必须是 4 维
+- 但 `LocalCPUBackend` 在 `layerwise` 下处理的是 3 维单层张量视图
+
+因此，当前更像是 `embedded priority-fs + FSConnector` 与 `layerwise` memory object / metadata schema 之间还缺一层 repo-local 适配。
+
+后续如果继续做这件事，请优先考虑 repo-local 方案，不要直接修改已安装的 `lmcache` 包源码。
 
 如果希望做成“常驻 Python server”，而不是 one-shot 脚本，还可以使用：
 
@@ -604,6 +630,7 @@ python demo/request_demo.py --requests 1
 这个 server 入口现在也支持两个与当前实验密切相关的开关：
 
 - `--layerwise`
+- `--no-layerwise`
 - `--save-decode-cache`
 - `--save-unfull-chunk`
 
@@ -611,9 +638,24 @@ python demo/request_demo.py --requests 1
 
 - `LAYERWISE=1`
 - `SAVE_DECODE_CACHE=1`
-- `SAVE_UNFULL_CHUNK=1`
+- `SAVE_UNFULL_CHUNK=0`
 
-例如：
+注意：
+
+- 当前 embedded 主线已经显式禁止同时启用 `layerwise` 和 `save_unfull_chunk`
+- 如果同时设置：
+  - `LAYERWISE=1`
+  - `SAVE_UNFULL_CHUNK=1`
+- 启动脚本会直接报错并退出
+
+当前默认推荐组合是：
+
+```bash
+LAYERWISE=1 SAVE_DECODE_CACHE=1 SAVE_UNFULL_CHUNK=0 \
+  bash embedded_demo/run_vllm_async_engine_priority_fs_server.sh
+```
+
+而下面这个组合当前会 fail-fast：
 
 ```bash
 LAYERWISE=1 SAVE_DECODE_CACHE=1 SAVE_UNFULL_CHUNK=1 \
