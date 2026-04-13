@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import aiofiles
 import aiofiles.os
+import os
 import torch
 
 from typing import List, Optional
@@ -202,6 +203,8 @@ class PriorityFSConnector(RemoteConnector):
         return await self.write_connector.get(key)
 
     async def put(self, key: CacheEngineKey, memory_obj: MemoryObj):
+        if os.environ.get("PRIORITY_FS_SKIP_WRITE") == "1":
+            return
         await self.write_connector.put(key, memory_obj)
 
     async def list(self) -> List[str]:

@@ -151,7 +151,155 @@ LAYERWISE=1 SAVE_UNFULL_CHUNK=1
 - 不改 site-packages
 - 先保证 correctness
 
-## 6. 当前建议
+## 6. 当前已确认的 self-heal 限制
+
+当前 layerwise 路径下，还有一个已经确认的行为限制：
+
+- cache 不会自动 self-heal
+
+具体表现是：
+
+- 如果一次 warmup 后，人工删掉某个已落盘 chunk 的一部分 layer 文件
+- 下一次同样请求进来时，命中前缀会缩短
+- 这是预期内的
+- 但这次请求不会自动把缺失的 layer 文件补写回去
+
+当前最合理的原因判断是：
+
+1. layerwise retrieve 侧只拿每个 chunk 的第 0 层作为“这个 chunk 是否存在”的判定依据。
+2. layerwise store 侧也只拿每个 chunk 的第 0 层作为“这个 chunk 是否已经存在”的判定依据。
+3. 因此如果一个 chunk 的第 0 层仍在，但其它 layer 缺失：
+   - retrieve 侧仍可能把这个 chunk 当作“存在”
+   - store 侧也会把这个 chunk 当作“已存在”，从而直接跳过重写
+4. 这会导致：
+   - prefix 命中一旦因为缺层而变短
+   - 后续请求不会顺手把缺失 layer 补齐
+   - cache 不会自动恢复完整
+
+对应的上游代码证据：
+
+- `store_layer()` 在处理 layerwise chunk 时：
+  - 先 `key.split_layers(self.num_layers)`
+  - 但只检查 `keys_multi_layer[0]`
+  - 如果第 0 层存在，就直接跳过整个 chunk
+- `retrieve_layer()` 也同样：
+  - 只检查 `keys_multi_layer[0]`
+  - 一旦某个 chunk 的第 0 层 miss，就直接停止继续向后匹配
+
+因此，这不是简单的“部分 overlap 冲突”，而是当前 layerwise 路径的存在性判定粒度过粗：
+
+- 它不是 per-layer 判定
+- 而是“拿 layer 0 代表整个 chunk”
+
+当前先把这个问题作为已确认限制记录下来。
+后续如果要修，需要再决定是否接受 repo-local hack。
+
+## 7. 当前已确认的运行时禁写能力
+
+当前还确认了一个和实验控制相关的事实：
+
+- user 无法通过一个现成的公开“全局 runtime 开关”
+  临时禁止所有 backend 写入
+- 但可以按 request 粒度临时禁止写入
+
+更具体地说：
+
+1. per-request 临时禁写是支持的。
+2. 上游 vLLM / LMCache 适配层会读取 request_configs 里的：
+   - `lmcache.skip_save`
+3. 只要某次请求带了：
+   - `lmcache.skip_save=True`
+   这一请求就不会向 backend 写入 cache。
+4. 当前没有一个同样干净的“全局 runtime 开关”
+   可以在服务运行中随时打开/关闭所有写入。
+5. 类似 `LMCACHE_FORCE_SKIP_SAVE` 这类机制更接近启动时配置，
+   不是面向运行中随时切换的正式接口。
+
+因此，如果后续实验需要“临时不写 cache”，当前更推荐：
+
+- 使用 per-request 的 `lmcache.skip_save`
+
+而不是依赖全局动态开关。
+
+## 8. 当前已确认的 pause/resume 能力
+
+当前还确认了一个和 chunk 边界控制相关的事实：
+
+- vLLM Async engine 官方支持 pause / resume
+- 但它不是原生的 chunk-aware 接口
+
+更具体地说：
+
+1. Async engine 提供：
+   - `pause_generation(mode="keep")`
+   - `resume_generation()`
+2. 这套接口的语义更接近：
+   - 暂停 / 恢复 generation scheduler
+   - 并保留 in-flight request 继续运行所需的状态
+3. 官方没有直接暴露一个：
+   - “跑到下一个 LMCache chunk 边界自动暂停”
+   - 这样的专用接口
+4. 但如果 user 自己在外层已经能数到 chunk boundary，
+   那么就可以：
+   - 先运行生成
+   - 在达到目标 chunk 边界时调用 pause
+   - 之后再调用 resume
+5. 因此，从能力上说：
+   - “chunk by chunk generate” 不是官方直接给出的现成模式
+   - 但可以通过
+     - 外层边界计数
+     - 加上
+     - 官方 pause / resume
+     - 来近似实现
+
+当前先把这个能力边界记录下来。
+
+## 9. pause/resume 与 save 策略切换的限制
+
+当前还确认了一个更细的限制：
+
+- `pause_generation(mode="keep")` / `resume_generation()` 可以保留并继续同一个
+  in-flight request
+- 但当前没有看到公开接口允许在 pause 期间再修改这个 request 的
+  LMCache save 策略
+
+更具体地说：
+
+1. request 级 save 控制（例如 `lmcache.skip_save`）是从
+   request 创建时的 `sampling_params.extra_args["kv_transfer_params"]`
+   提取出来的。
+2. 这些 request_configs 会进入 request 的跟踪状态。
+3. pause / resume 只是让同一个 request 继续跑。
+4. 当前没有公开 API 支持在 pause 后、resume 前再去修改
+   同一个 request 的 request_configs / save 策略。
+
+因此：
+
+- 如果某次 request 从一开始就要禁写，应在创建 request 时就设置
+  `lmcache.skip_save=True`
+- 如果想中途切换 save 策略，更现实的方式是：
+  - 结束当前 request
+  - 再新建一个 request
+  - 给新 request 带不同的 save 策略
+
+## 10. AsyncLLM 输入形式
+
+当前还确认：
+
+- vLLM 的 AsyncLLM / Async engine 输入不只支持字符串
+- 也支持直接传 token ids
+
+也就是说：
+
+1. 可以喂普通 string prompt
+2. 也可以喂 tokenized input
+3. 因此如果后续需要精确控制 chunk boundary，
+   直接基于 token ids 驱动会比先转回字符串更自然
+
+当前仓库里的 minimal embedded server 仍然只暴露了最简单的 string prompt 用法，
+但这不是 Async engine 本身的能力上限。
+
+## 11. 当前建议
 
 当前仓库默认建议：
 
@@ -173,7 +321,7 @@ LAYERWISE=1 SAVE_UNFULL_CHUNK=1
 LAYERWISE=1 SAVE_UNFULL_CHUNK=1
 ```
 
-## 7. 推荐复现实验
+## 12. 推荐复现实验
 
 ```bash
 LMCACHE_CONFIG_FILE_PATH=embedded_demo/configs/non_layerwise_unfull_on.yaml \

@@ -8,6 +8,7 @@
 更详细的当前实现说明见：
 
 - [docs/current-approach.md](/home/junhaoy/ServerlessLMCache/docs/current-approach.md)
+- [docs/current-approach.en.md](/home/junhaoy/ServerlessLMCache/docs/current-approach.en.md)
 
 如果你要的是下面这个语义：
 

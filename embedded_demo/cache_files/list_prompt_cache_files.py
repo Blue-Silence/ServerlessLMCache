@@ -42,6 +42,19 @@ def format_chunk_hash(chunk_hash: int) -> str:
     return f"{chunk_hash:x}"
 
 
+def collect_chunk_records(
+    token_records: list[tuple[int, int, list[str]]],
+) -> list[tuple[int, list[str]]]:
+    chunk_records: list[tuple[int, list[str]]] = []
+    previous: tuple[int, tuple[str, ...]] | None = None
+    for _, chunk_hash, filenames in token_records:
+        marker = (chunk_hash, tuple(filenames))
+        if marker != previous:
+            chunk_records.append((chunk_hash, filenames))
+            previous = marker
+    return chunk_records
+
+
 def resolve_num_layers(model: str, explicit_num_layers: int | None) -> int | None:
     if explicit_num_layers is not None:
         return explicit_num_layers
@@ -104,7 +117,7 @@ def main() -> None:
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     prompt = build_completion_prompt(args.repetitions, args.round_id)
-    token_ids, chunk_hashes, filenames = compute_cache_filenames(
+    token_records = compute_cache_filenames(
         tokenizer=tokenizer,
         prompt=prompt,
         model_name=args.model,
@@ -117,13 +130,15 @@ def main() -> None:
         num_layers=num_layers,
         save_unfull_chunk=args.save_unfull_chunk,
     )
+    chunk_records = collect_chunk_records(token_records)
     cache_dir = Path(args.cache_dir).resolve()
-    complete_chunks = len(set(chunk_hashes))
+    complete_chunks = sum(1 for _, filenames in chunk_records if filenames)
+    total_files = sum(len(filenames) for _, filenames in chunk_records)
 
     print(f"model: {args.model}")
-    print(f"tokens: {len(token_ids)}")
+    print(f"tokens: {len(token_records)}")
     print(f"complete_chunks: {complete_chunks}")
-    print(f"total_files: {len(filenames)}")
+    print(f"total_files: {total_files}")
     print(f"world_size: {args.world_size}")
     print(f"worker_id: {args.worker_id}")
     print(f"kv_dtype: {args.kv_dtype}")
@@ -136,16 +151,24 @@ def main() -> None:
     print("-" * 80)
 
     existing_count = 0
-    for idx, (chunk_hash, filename) in enumerate(zip(chunk_hashes, filenames)):
-        file_path = cache_dir / filename
-        exists = file_path.exists()
-        if exists:
-            existing_count += 1
-        status = "EXISTS" if exists else "MISSING"
-        print(f"[{idx:02d}] {status:7s} {format_chunk_hash(chunk_hash)}  {file_path}")
+    file_idx = 0
+    for chunk_hash, filenames in chunk_records:
+        if not filenames:
+            print(f"[{file_idx:02d}] UNSAVED  {format_chunk_hash(chunk_hash)}  <partial chunk>")
+            file_idx += 1
+            continue
+
+        for filename in filenames:
+            file_path = cache_dir / filename
+            exists = file_path.exists()
+            if exists:
+                existing_count += 1
+            status = "EXISTS" if exists else "MISSING"
+            print(f"[{file_idx:02d}] {status:7s} {format_chunk_hash(chunk_hash)}  {file_path}")
+            file_idx += 1
 
     print("-" * 80)
-    print(f"existing_files: {existing_count}/{len(chunk_hashes)}")
+    print(f"existing_files: {existing_count}/{total_files}")
 
 
 if __name__ == "__main__":

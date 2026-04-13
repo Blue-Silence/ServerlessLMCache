@@ -26,6 +26,8 @@ _KV_DTYPE_MAP = {
     "float32": torch.float32,
 }
 
+TokenCacheFiles = tuple[int, int, list[str]]
+
 
 def _resolve_kv_dtype(kv_dtype: str) -> torch.dtype:
     try:
@@ -49,11 +51,17 @@ def compute_cache_filenames(
     use_layerwise: bool = True,
     num_layers: int | None = None,
     save_unfull_chunk: bool = False,
-) -> tuple[list[int], list[int], list[str]]:
+) -> list[TokenCacheFiles]:
     """Compute embedded LMCache chunk hashes and filenames for a prompt.
 
-    Returns token ids plus the filenames that embedded priority-fs writes into
-    ``.kvcache`` / ``.kvcache_remote``.
+    Returns one record per token in the prompt:
+
+        (token_id, chunk_hash, filenames)
+
+    Tokens that belong to the same chunk share the same ``chunk_hash`` and
+    ``filenames`` list. When ``save_unfull_chunk=False``, tokens in the final
+    partial chunk still appear in the result, but their ``filenames`` list is
+    empty because LMCache will not persist that chunk.
 
     Filename schema:
 
@@ -69,10 +77,11 @@ def compute_cache_filenames(
       ``f"{chunk_hash:x}"``, so negative-looking values are possible.
     - This helper is intentionally not shared with the MP demo because the MP
       path uses a different object-key schema with ``kv_rank`` instead.
-    - When ``use_layerwise=True``, ``num_layers`` must be provided and the
-      returned ``chunk_hashes`` list is expanded to align 1:1 with filenames.
+    - When ``use_layerwise=True``, ``num_layers`` must be provided and each
+      token record stores the list of per-layer filenames for its chunk.
     - ``save_unfull_chunk`` defaults to False here to match the current embedded
-      demo default, so only full chunks are included unless explicitly enabled.
+      demo default. In that mode, the trailing partial chunk maps to an empty
+      filename list.
     """
     if use_layerwise and (num_layers is None or num_layers <= 0):
         raise ValueError("num_layers must be a positive integer when use_layerwise=True")
@@ -95,16 +104,48 @@ def compute_cache_filenames(
         chunk_size=chunk_size,
     )
     token_db = ChunkedTokenDatabase(config=config, metadata=metadata)
-
-    chunk_hashes = []
-    filenames = []
-    for _, _, key in token_db.process_tokens(tokens=token_ids, make_key=True):
+    records: list[TokenCacheFiles | None] = [None] * len(token_ids)
+    for start_idx, end_idx, key in token_db.process_tokens(tokens=token_ids, make_key=True):
         if use_layerwise:
-            for layer_key in key.split_layers(num_layers):
-                chunk_hashes.append(layer_key.chunk_hash)
-                filenames.append(layer_key.to_string().replace("/", "-SEP-") + ".data")
+            chunk_hash = key.chunk_hash
+            filenames = [
+                layer_key.to_string().replace("/", "-SEP-") + ".data"
+                for layer_key in key.split_layers(num_layers)
+            ]
         else:
-            chunk_hashes.append(key.chunk_hash)
-            filenames.append(key.to_string().replace("/", "-SEP-") + ".data")
+            chunk_hash = key.chunk_hash
+            filenames = [key.to_string().replace("/", "-SEP-") + ".data"]
 
-    return token_ids, chunk_hashes, filenames
+        for token_idx in range(start_idx, end_idx):
+            records[token_idx] = (token_ids[token_idx], chunk_hash, filenames)
+
+    if any(record is None for record in records):
+        full_chunk_count = len(token_ids) // chunk_size
+        partial_start = full_chunk_count * chunk_size
+        if partial_start < len(token_ids):
+            partial_config = LMCacheEngineConfig(
+                chunk_size=chunk_size,
+                pre_caching_hash_algorithm=hash_algorithm,
+                use_layerwise=use_layerwise,
+                save_unfull_chunk=True,
+            )
+            partial_token_db = ChunkedTokenDatabase(config=partial_config, metadata=metadata)
+            partial_chunk_hash = None
+            for start_idx, _, chunk_hash in partial_token_db.process_tokens(
+                tokens=token_ids,
+                make_key=False,
+            ):
+                if start_idx == partial_start:
+                    partial_chunk_hash = chunk_hash
+                    break
+
+            if partial_chunk_hash is None:
+                raise RuntimeError("Could not compute the trailing partial chunk hash.")
+
+            for token_idx in range(partial_start, len(token_ids)):
+                records[token_idx] = (token_ids[token_idx], partial_chunk_hash, [])
+
+    if any(record is None for record in records):
+        raise RuntimeError("Could not map every token to a chunk hash and filenames.")
+
+    return list(records)

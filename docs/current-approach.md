@@ -548,6 +548,17 @@ python demo/request_demo.py --requests 1
   - decode cache 写入
   - partial / unfull chunk 写入
 
+另外，当前 repo 里为 embedded `priority-fs` 路线额外保留了一个测试用禁写开关：
+
+- 设置环境变量 `PRIORITY_FS_SKIP_WRITE=1` 后
+- `embedded_demo/priority_fs_adapter.py` 里的 repo-local backend 会直接跳过 remote/fs 落盘
+- 这只影响 embedded `priority-fs` 的写入，不影响读取语义
+- 因此：
+  - 仍然先读 `B = .kvcache_remote`
+  - `B` miss 仍然回退到 `A = .kvcache`
+- 这个开关对 `layerwise` 和 `non-layerwise` 都有效
+- 它不影响 `LMCache MP` 路线
+
 实现方式不是 hack 文件系统 API，而是在 embedded 路径里复用两个官方 `FSConnector`：
 
 - 一个只负责读优先路径 `B`
@@ -663,3 +674,28 @@ LMCACHE_CONFIG_FILE_PATH=embedded_demo/configs/non_layerwise_unfull_on.yaml \
 python embedded_demo/run_vllm_async_engine_priority_fs_server.py \
   --config embedded_demo/configs/non_layerwise_unfull_off.yaml
 ```
+
+如果只是想临时验证“读路径/命中逻辑”，但不想让 embedded backend 真的写盘，也可以直接：
+
+```bash
+PRIORITY_FS_SKIP_WRITE=1 \
+  bash embedded_demo/run_vllm_async_engine_priority_fs_server.sh
+```
+
+另外，当前还确认：
+
+- vLLM Async engine 官方支持 `pause_generation(mode="keep")` / `resume_generation()`
+- 它不是原生的 chunk-aware 接口
+- 但如果外层已经能数到 LMCache chunk boundary，
+  那么可以在边界点主动 pause，再继续 resume
+- 因此，“chunk by chunk generate” 更适合视为：
+  - 外层边界计数
+  - 加上
+  - engine 的 pause / resume
+  - 组合实现
+- 但当前没有看到公开接口允许在 pause 期间再修改同一个 in-flight request 的
+  LMCache save 策略；如果要切换 `lmcache.skip_save` 这类策略，
+  更现实的方式是结束当前 request，再以新策略新建一个 request
+- Async engine 的输入形式也不只支持 string prompt，
+  也支持直接传 token ids；如果后续要精确控制 chunk boundary，
+  基于 token ids 驱动会更自然

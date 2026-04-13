@@ -1,4 +1,4 @@
-chunk_size: 256
+chunk_size: 32
 local_cpu: true
 max_local_cpu_size: 4.0
 remote_url: "priority-fs://?read_path=/home/junhaoy/ServerlessLMCache/.kvcache_remote&write_path=/home/junhaoy/ServerlessLMCache/.kvcache"
