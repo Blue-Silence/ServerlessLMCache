@@ -70,6 +70,7 @@ class CompletionRequest(BaseModel):
     temperature: float = 0.0
     stream: bool = False
 
+    kv_transfer_params: dict[str, Any] | None = None
 
 def build_app(args) -> FastAPI:
     resolved_model = resolve_model(args.model, args.model_source)
@@ -135,9 +136,15 @@ def build_app(args) -> FastAPI:
 
         engine = app.state.engine
         request_id = f"cmpl-{uuid.uuid4().hex}"
+        
+        extra_args = {}
+        if request.kv_transfer_params is not None:
+            extra_args["kv_transfer_params"] = request.kv_transfer_params
+            
         sampling_params = SamplingParams(
             temperature=request.temperature,
             max_tokens=request.max_tokens,
+            extra_args=extra_args or None,
         )
 
         final_output = None
